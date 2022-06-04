@@ -2,17 +2,13 @@
 Mask R-CNN
 Display and Visualization Functions.
 
-Based on the work of Waleed Abdulla (Matterport)
-Modified by github.com/GustavZ
+Copyright (c) 2017 Matterport, Inc.
+Licensed under the MIT License (see LICENSE for details)
+Written by Waleed Abdulla
 """
-# python 2 compability
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
 
 import os
 import sys
-import logging
 import random
 import itertools
 import colorsys
@@ -23,13 +19,14 @@ import matplotlib.pyplot as plt
 from matplotlib import patches,  lines
 from matplotlib.patches import Polygon
 import IPython.display
+from PIL import Image, ImageDraw, ImageFont
 
 # Root directory of the project
 ROOT_DIR = os.path.abspath("../")
 
 # Import Mask RCNN
 sys.path.append(ROOT_DIR)  # To find local version of the library
-from mmrcnn import utils
+from mrcnn import utils
 
 
 ############################################################
@@ -44,7 +41,7 @@ def display_images(images, titles=None, cols=4, cmap=None, norm=None,
     cols: number of images per row
     cmap: Optional. Color map to use. For example, "Blues".
     norm: Optional. A Normalize instance to map values to colors.
-    interpolation: Optional. Image interporlation to use for display.
+    interpolation: Optional. Image interpolation to use for display.
     """
     titles = titles if titles is not None else [""] * len(images)
     rows = len(images) // cols + 1
@@ -76,14 +73,11 @@ def random_colors(N, bright=True):
 def apply_mask(image, mask, color, alpha=0.5):
     """Apply the given mask to the image.
     """
-    #for c in range(3):
-    #    image[:, :, c] = np.where(mask == 1,
-    #                              image[:, :, c] *
-    #                              (1 - alpha) + alpha * color[c] * 255,
-    #                              image[:, :, c])
-    mask_px = np.where(mask)
     for c in range(3):
-        image[mask_px[0], mask_px[1], c] = (1 - alpha)*image[mask_px[0], mask_px[1], c] + alpha * color[c] * 255
+        image[:, :, c] = np.where(mask == 1,
+                                  image[:, :, c] *
+                                  (1 - alpha) + alpha * color[c] * 255,
+                                  image[:, :, c])
     return image
 
 
@@ -212,6 +206,98 @@ def display_differences(image,
         colors=colors, captions=captions,
         title=title)
 
+def save_image(image, image_name, boxes, masks, class_ids, scores, class_names, filter_classs_names=None,
+               scores_thresh=0.1, save_dir=None, mode=0):
+    """
+        image: image array
+        image_name: image name
+        boxes: [num_instance, (y1, x1, y2, x2, class_id)] in image coordinates.
+        masks: [num_instances, height, width]
+        class_ids: [num_instances]
+        scores: confidence scores for each box
+        class_names: list of class names of the dataset
+        filter_classs_names: (optional) list of class names we want to draw
+        scores_thresh: (optional) threshold of confidence scores
+        save_dir: (optional) the path to store image
+        mode: (optional) select the result which you want
+                mode = 0 , save image with bbox,class_name,score and mask;
+                mode = 1 , save image with bbox,class_name and score;
+                mode = 2 , save image with class_name,score and mask;
+                mode = 3 , save mask with black background;
+    """
+    mode_list = [0, 1, 2, 3]
+    assert mode in mode_list, "mode's value should in mode_list %s" % str(mode_list)
+
+    if save_dir is None:
+        save_dir = os.path.join(os.getcwd(), "output")
+        if not os.path.exists(save_dir):
+            os.makedirs(save_dir)
+
+    useful_mask_indices = []
+
+    N = boxes.shape[0]
+    if not N:
+        print("\n*** No instances in image %s to draw *** \n" % (image_name))
+        return
+    else:
+        assert boxes.shape[0] == masks.shape[-1] == class_ids.shape[0]
+
+    for i in range(N):
+        # filter
+        class_id = class_ids[i]
+        score = scores[i] if scores is not None else None
+        if score is None or score < scores_thresh:
+            continue
+
+        label = class_names[class_id]
+        if (filter_classs_names is not None) and (label not in filter_classs_names):
+            continue
+
+        if not np.any(boxes[i]):
+            # Skip this instance. Has no bbox. Likely lost in image cropping.
+            continue
+
+        useful_mask_indices.append(i)
+
+    if len(useful_mask_indices) == 0:
+        print("\n*** No instances in image %s to draw *** \n" % (image_name))
+        return
+
+    colors = random_colors(len(useful_mask_indices))
+
+    if mode != 3:
+        masked_image = image.astype(np.uint8).copy()
+    else:
+        masked_image = np.zeros(image.shape).astype(np.uint8)
+
+    if mode != 1:
+        for index, value in enumerate(useful_mask_indices):
+            masked_image = apply_mask(masked_image, masks[:, :, value], colors[index])
+
+    masked_image = Image.fromarray(masked_image)
+
+    if mode == 3:
+        masked_image.save(os.path.join(save_dir, '%s.jpg' % (image_name)))
+        return
+
+    draw = ImageDraw.Draw(masked_image)
+    colors = np.array(colors).astype(int) * 255
+
+    for index, value in enumerate(useful_mask_indices):
+        class_id = class_ids[value]
+        score = scores[value]
+        label = class_names[class_id]
+
+        y1, x1, y2, x2 = boxes[value]
+        if mode != 2:
+            color = tuple(colors[index])
+            draw.rectangle((x1, y1, x2, y2), outline=color)
+
+        # Label
+        font = ImageFont.truetype('/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf', 15)
+        draw.text((x1, y1), "%s %f" % (label, score), (255, 255, 255), font)
+
+    return masked_image
 
 def draw_rois(image, rois, refined_rois, mask, class_ids, class_names, limit=10):
     """
@@ -331,7 +417,7 @@ def plot_overlaps(gt_class_ids, pred_class_ids, pred_scores,
     gt_class_ids: [N] int. Ground truth class IDs
     pred_class_id: [N] int. Predicted class IDs
     pred_scores: [N] float. The probability scores of predicted classes
-    overlaps: [pred_boxes, gt_boxes] IoU overlaps of predictins and GT boxes.
+    overlaps: [pred_boxes, gt_boxes] IoU overlaps of predictions and GT boxes.
     class_names: list of all class names in the dataset
     threshold: Float. The prediction probability required to predict a class
     """
@@ -367,7 +453,7 @@ def plot_overlaps(gt_class_ids, pred_class_ids, pred_scores,
 def draw_boxes(image, boxes=None, refined_boxes=None,
                masks=None, captions=None, visibilities=None,
                title="", ax=None):
-    """Draw bounding boxes and segmentation masks with differnt
+    """Draw bounding boxes and segmentation masks with different
     customizations.
 
     boxes: [N, (y1, x1, y2, x2, class_id)] in image coordinates.
@@ -376,7 +462,7 @@ def draw_boxes(image, boxes=None, refined_boxes=None,
     masks: [N, height, width]
     captions: List of N titles to display on each box
     visibilities: (optional) List of values of 0, 1, or 2. Determine how
-        prominant each bounding box should be.
+        prominent each bounding box should be.
     title: An optional title to show over the image
     ax: (optional) Matplotlib axis to draw on.
     """
